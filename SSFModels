@@ -1,0 +1,211 @@
+#Author: Ellen Audia
+#Email: ellen.audia@siu.edu
+#Last updated: 02/13/2026
+#Bobcat step selection
+#R script part 2: Sex-period ssfs
+
+#
+#### 1 - Set up ####
+#
+
+
+#set up libraries
+library(glmmTMB)
+library(tidyverse)
+library(sf)
+library(sp)
+
+#read in data
+ssf_lines_wCov<-readRDS("pub_data.rds")
+
+#split by sex and season
+male_sf <- ssf_lines_wCov %>%
+  filter(period == "sf" & sex == "Male") %>%
+  st_set_geometry(NULL)  # remove the geometry column
+
+female_sf <- ssf_lines_wCov %>%
+  filter(period == "sf" & sex == "Female") %>%
+  st_set_geometry(NULL)
+
+male_ws <- ssf_lines_wCov %>%
+  filter(period == "ws" & sex == "Male") %>%
+  st_set_geometry(NULL)
+
+female_ws <- ssf_lines_wCov %>%
+  filter(period == "ws" & sex == "Female") %>%
+  st_set_geometry(NULL)
+
+
+
+
+#
+#### 2 - Select most parsimonious landcover models ####
+#
+
+#####function to fit models for all 4 datasets#####
+
+fit_glmm_models <- function(dat) {
+  
+  models <- list(
+    #null model
+    null = glmmTMB(case~ (1|strata),
+                   family=poisson, data=dat,
+                   map=list(theta=factor(c(NA))), 
+                   start=list(theta=c(log(1e3)))), #these lines specify the fixed variance for the strata random effect
+    
+    #model with just forest open edge
+    forest_open = glmmTMB(case~-1+forest+forest_open+log(dist)+
+                            forest:log(dist)+forest_open:log(dist)+
+                            (1|strata)+
+                            (0+forest|id)+(0+forest_open|id),
+                          family=poisson, data=dat,
+                          map=list(theta=factor(c(NA,1:2))),
+                          start=list(theta=c(log(1e3),0,0))),
+    
+    #model with both forest-grassland and forest-crop edge
+    forest_gc = glmmTMB(case~-1+forest+forest_grass+forest_crop+log(dist)+
+                          forest:log(dist)+forest_grass:log(dist)+forest_crop:log(dist)+
+                          (1|strata)+
+                          (0+forest|id)+(0+forest_grass|id)+(0+forest_crop|id),
+                        family=poisson, data=dat,
+                        map=list(theta=factor(c(NA,1:3))),
+                        start=list(theta=c(log(1e3),0,0,0)))
+    
+  )
+  
+  # return AICs (and keep models if you want them later)
+  list(
+    AIC = sapply(models, AIC),
+    models = models
+  )
+}
+
+#make a list of the datasets
+datasets <- list(
+  msf = male_sf,
+  mws = male_ws,
+  fsf = female_sf,
+  fws = female_ws
+)
+
+#apply function to datasets
+system.time(results_TMB <- lapply(datasets, fit_glmm_models)) 
+
+#check AIC
+AIC_table <- do.call(rbind, lapply(results_TMB, `[[`, "AIC"))
+AIC_table
+
+#pull out best models (lowest AIC)
+best_models <- lapply(results_TMB, function(res) {
+  best_name <- names(res$AIC)[which.min(res$AIC)]
+  res$models[[best_name]]
+})
+
+#assign best model names
+msf_model<-best_models$msf
+mws_model<-best_models$mws
+fsf_model<-best_models$fsf
+fws_model<-best_models$fws
+
+
+
+#
+#### 3 - Road Models ####
+#
+
+#####Subset Data #####
+
+#load roads
+roads<-st_read("DetailedRoads.shp")
+
+# make sure CRS matches steps and have valid geometry
+roads <- st_transform(roads, st_crs(ssf_lines_wCov))
+roads <- st_make_valid(roads)
+ssf_lines_wCov <- st_make_valid(ssf_lines_wCov)
+
+#pull out used steps within 500 meters of roads
+used_near_roads <- ssf_lines_wCov %>%
+  filter(case == 1) %>%
+  st_filter(roads, .predicate = st_is_within_distance, dist = 500)
+
+#match random strata
+valid_strata <- used_near_roads$strata
+steps_subset <- ssf_lines_wCov %>%
+  filter(strata %in% valid_strata)
+
+
+#split by sex and period
+submale_sf <- steps_subset %>%
+  filter(period == "sf" & sex == "Male") %>%
+  st_set_geometry(NULL)  # remove the geometry column
+
+
+subfemale_sf <- steps_subset %>%
+  filter(period == "sf" & sex == "Female") %>%
+  st_set_geometry(NULL)
+
+
+submale_ws <- steps_subset %>%
+  filter(period == "ws" & sex == "Male") %>%
+  st_set_geometry(NULL)
+
+
+subfemale_ws <- steps_subset %>%
+  filter(period == "ws" & sex == "Female") %>%
+  st_set_geometry(NULL)
+
+
+#Using best landcover model, add road_cross and interactions with forest and log(dist)
+
+#female summer/fall season
+Female_sf_models <- glmmTMB(case~-1+forest+forest_grass+forest_crop+road_cross+log(dist)+
+                                       
+                                       forest:road_cross+
+                                       
+                                       log(dist):road_cross+forest:log(dist) + forest_grass:log(dist) + forest_crop:log(dist) +  
+                                       (1 | strata) +
+                                       (0 + forest | id) + (0 + forest_grass | id) + (0 + forest_crop | id)+(0+road_cross|id),
+                                     family=poisson, data=subfemale_sf,
+                                     map=list(theta=factor(c(NA,1:4))),
+                                     start=list(theta=c(log(1e3),0,0,0,0)))
+
+#female winter/spring
+Female_ws_roads_models <- glmmTMB(case~-1+forest+forest_grass+forest_crop+road_cross+log(dist)+
+                                         
+                                         forest:road_cross+
+                                         
+                                         log(dist):road_cross+forest:log(dist) + forest_grass:log(dist) + forest_crop:log(dist) +  
+                                         (1 | strata) +
+                                         (0 + forest | id) + (0 + forest_grass | id) + (0 + forest_crop | id)+(0+road_cross|id),
+                                       family=poisson, data=subfemale_ws,
+                                       map=list(theta=factor(c(NA,1:4))),
+                                       start=list(theta=c(log(1e3),0,0,0,0)))
+
+
+#male summer/fall
+Male_sf_roads_models <- glmmTMB(case~-1+forest+forest_open+road_cross+log(dist)+
+                                     
+                                     forest:road_cross+
+                                     
+                                     log(dist):road_cross+forest:log(dist) + forest_open:log(dist) +  
+                                     
+                                     (1 | strata) +
+                                     
+                                     (0 + forest | id) + (0 + forest_open | id) +(0+road_cross|id),
+                                   family=poisson, data=submale_sf,
+                                   map=list(theta=factor(c(NA,1:3))),
+                                   start=list(theta=c(log(1e3),0,0,0)))
+
+#male winter/spring
+Male_ws_roads_models <- glmmTMB(case~-1+forest+forest_open+road_cross+log(dist)+
+                                       
+                                       forest:road_cross+
+                                       
+                                       log(dist):road_cross+forest:log(dist) + forest_open:log(dist) +  
+                                       
+                                       (1 | strata) +
+                                       
+                                       (0 + forest | id) + (0 + forest_open | id) +(0+road_cross|id),
+                                     family=poisson, data=submale_ws,
+                                     map=list(theta=factor(c(NA,1:3))),
+                                     start=list(theta=c(log(1e3),0,0,0)))
