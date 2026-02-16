@@ -18,7 +18,7 @@ library(sp)
 #read in data
 ssf_lines_wCov<-readRDS("pub_data.rds")
 
-#split by sex and season
+#split by sex and period
 male_sf <- ssf_lines_wCov %>%
   filter(period == "sf" & sex == "Male") %>%
   st_set_geometry(NULL)  # remove the geometry column
