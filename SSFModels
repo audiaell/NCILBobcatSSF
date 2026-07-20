@@ -1,8 +1,10 @@
 #Author: Ellen Audia
 #Email: ellen.audia@siu.edu
-#Last updated: 02/13/2026
+#Last updated: 07/20/2026
 #Bobcat step selection
-#R script part 2: Sex-period ssfs
+#R script part 2: Sex-season ssfs
+
+#Definition: kitten = summer/fall; breeding = winter/spring
 
 #
 #### 1 - Set up ####
@@ -14,63 +16,93 @@ library(glmmTMB)
 library(tidyverse)
 library(sf)
 library(sp)
+library(car)
+library(DescTools)
+library(jtools)
+library(ggeffects)
 
-#read in data
-ssf_lines_wCov<-readRDS("pub_data.rds")
+setwd("your/folder/with/data")
 
-#split by sex and period
-male_sf <- ssf_lines_wCov %>%
-  filter(period == "sf" & sex == "Male") %>%
+#read in data - should be dataframe with columns for sex, season, datetime, step, case, strata
+ssf_lines_wCov<-"your/ssf/data"
+
+#split by sex and season
+male_kitten <- ssf_lines_wCov %>%
+  filter(season == "kitten" & sex == "Male") %>%
   st_set_geometry(NULL)  # remove the geometry column
 
-female_sf <- ssf_lines_wCov %>%
-  filter(period == "sf" & sex == "Female") %>%
+table(male_kitten$ID) #13 (removed 4 juveniles)
+mean(male_kitten$dist)
+sd(male_kitten$dist)
+
+female_kitten <- ssf_lines_wCov %>%
+  filter(season == "kitten" & sex == "Female") %>%
   st_set_geometry(NULL)
 
-male_ws <- ssf_lines_wCov %>%
-  filter(period == "ws" & sex == "Male") %>%
+table(female_kitten$ID) #9 ind, 12 by (removed 1 juvenile)
+mean(female_kitten$dist)
+sd(female_kitten$dist)
+
+male_breeding <- ssf_lines_wCov %>%
+  filter(season == "breeding" & sex == "Male") %>%
   st_set_geometry(NULL)
 
-female_ws <- ssf_lines_wCov %>%
-  filter(period == "ws" & sex == "Female") %>%
+table(male_breeding$ID) #18 (removed 8 juveniles)
+mean(male_breeding$dist)
+sd(male_breeding$dist)
+
+female_breeding <- ssf_lines_wCov %>%
+  filter(season == "breeding" & sex == "Female") %>%
   st_set_geometry(NULL)
 
+table(female_breeding$ID) #16 by, 13 ind (removed 2 juveniles)
+sd(female_breeding$dist)
 
+#Check correlations
+mk_cor <- male_kitten %>%
+  dplyr::select(11:21) %>%
+  cor(method = "spearman", use = "complete.obs")
+
+fk_cor <- female_kitten %>%
+  dplyr::select(11:21) %>%
+  cor(method = "spearman", use = "complete.obs")
+
+mb_cor <- male_breeding %>%
+  dplyr::select(11:21) %>%
+  cor(method = "spearman", use = "complete.obs")
+
+fb_cor <- female_breeding %>%
+  dplyr::select(11:21) %>%
+  cor(method = "spearman", use = "complete.obs")
+
+
+#standardize
+mk_standardized <- male_kitten %>%
+  mutate(across(c(11:22), ~ (.-mean(.)) / sd(.))) 
+fk_standardized <- female_kitten %>%
+  mutate(across(c(11:22), ~ (.-mean(.)) / sd(.))) 
+mb_standardized <- male_breeding %>%
+  mutate(across(c(11:22), ~ (.-mean(.)) / sd(.))) 
+fb_standardized <- female_breeding %>%
+  mutate(across(c(11:22), ~ (.-mean(.)) / sd(.)))
 
 
 #
-#### 2 - Select most parsimonious landcover models ####
+#### 2 - Landcover models
 #
 
-#####function to fit models for all 4 datasets#####
+#function to fit models for all 4 datasets
 
 fit_glmm_models <- function(dat) {
-  
   models <- list(
-    #null model
-    null = glmmTMB(case~ (1|strata),
-                   family=poisson, data=dat,
-                   map=list(theta=factor(c(NA))), 
-                   start=list(theta=c(log(1e3)))), #these lines specify the fixed variance for the strata random effect
-    
-    #model with just forest open edge
-    forest_open = glmmTMB(case~-1+forest+forest_open+log(dist)+
-                            forest:log(dist)+forest_open:log(dist)+
-                            (1|strata)+
-                            (0+forest|id)+(0+forest_open|id),
-                          family=poisson, data=dat,
-                          map=list(theta=factor(c(NA,1:2))),
-                          start=list(theta=c(log(1e3),0,0))),
-    
-    #model with both forest-grassland and forest-crop edge
-    forest_gc = glmmTMB(case~-1+forest+forest_grass+forest_crop+log(dist)+
-                          forest:log(dist)+forest_grass:log(dist)+forest_crop:log(dist)+
-                          (1|strata)+
-                          (0+forest|id)+(0+forest_grass|id)+(0+forest_crop|id),
-                        family=poisson, data=dat,
-                        map=list(theta=factor(c(NA,1:3))),
-                        start=list(theta=c(log(1e3),0,0,0)))
-    
+
+    forest_gc_age = glmmTMB(case~-1+(forest+forest_grass+forest_crop+log(dist)+
+                           log(dist):forest+log(dist):forest_grass+log(dist):forest_crop +
+                           (1|strata)+
+                           (0+forest|id)+(0+forest_grass|id)+(0+forest_crop|id)):age,
+                         family=poisson, data=dat,
+                         map=list(theta=factor(c(NA,1:3))),
+                         start=list(theta=c(log(1e3),0,0,0)))
   )
   
   # return AICs (and keep models if you want them later)
@@ -80,40 +112,33 @@ fit_glmm_models <- function(dat) {
   )
 }
 
-#make a list of the datasets
+
 datasets <- list(
-  msf = male_sf,
-  mws = male_ws,
-  fsf = female_sf,
-  fws = female_ws
+  mk = male_kitten,
+  mb = male_breeding,
+  fk = female_kitten,
+  fb = female_breeding
 )
+
 
 #apply function to datasets
 system.time(results_TMB <- lapply(datasets, fit_glmm_models)) 
 
-#check AIC
-AIC_table <- do.call(rbind, lapply(results_TMB, `[[`, "AIC"))
-AIC_table
+mk_model<-results_TMB$mk$models$forest_gc_age
+mb_model<-results_TMB$mb$models$forest_gc_age
+fk_model<-results_TMB$fk$models$forest_gc_age
+fb_model<-results_TMB$fb$models$forest_gc_age
 
-#pull out best models (lowest AIC)
-best_models <- lapply(results_TMB, function(res) {
-  best_name <- names(res$AIC)[which.min(res$AIC)]
-  res$models[[best_name]]
-})
-
-#assign best model names
-msf_model<-best_models$msf
-mws_model<-best_models$mws
-fsf_model<-best_models$fsf
-fws_model<-best_models$fws
+summary(mb_model)
+summary(mk_model)
+summary(fb_model)
+summary(fk_model)
 
 
 
 #
 #### 3 - Road Models ####
 #
-
-#####Subset Data #####
 
 #load roads
 roads<-st_read("DetailedRoads.shp")
@@ -133,79 +158,791 @@ valid_strata <- used_near_roads$strata
 steps_subset <- ssf_lines_wCov %>%
   filter(strata %in% valid_strata)
 
+steps_subset<-readRDS("steps_subset.rds")
 
 #split by sex and period
 submale_sf <- steps_subset %>%
-  filter(period == "sf" & sex == "Male") %>%
+  filter(season == "kitten" & sex == "Male") %>%
   st_set_geometry(NULL)  # remove the geometry column
 
 
 subfemale_sf <- steps_subset %>%
-  filter(period == "sf" & sex == "Female") %>%
+  filter(season == "kitten" & sex == "Female") %>%
   st_set_geometry(NULL)
 
 
 submale_ws <- steps_subset %>%
-  filter(period == "ws" & sex == "Male") %>%
+  filter(season == "breeding" & sex == "Male") %>%
   st_set_geometry(NULL)
 
 
 subfemale_ws <- steps_subset %>%
-  filter(period == "ws" & sex == "Female") %>%
+  filter(season == "breeding" & sex == "Female") %>%
   st_set_geometry(NULL)
 
 
-#Using best landcover model, add road_cross and interactions with forest and log(dist)
+#Using landcover model, add road_cross and interactions with forest and log(dist)
 
 #female summer/fall season
-Female_sf_models <- glmmTMB(case~-1+forest+forest_grass+forest_crop+road_cross+log(dist)+
-                                       
-                                       forest:road_cross+
-                                       
-                                       log(dist):road_cross+forest:log(dist) + forest_grass:log(dist) + forest_crop:log(dist) +  
-                                       (1 | strata) +
-                                       (0 + forest | id) + (0 + forest_grass | id) + (0 + forest_crop | id)+(0+road_cross|id),
-                                     family=poisson, data=subfemale_sf,
-                                     map=list(theta=factor(c(NA,1:4))),
-                                     start=list(theta=c(log(1e3),0,0,0,0)))
+Female_sf_models <- glmmTMB(case~-1+(forest+forest_grass+forest_crop+road_cross+log(dist)+
+                              
+                              forest:road_cross+
+                              
+                              log(dist):road_cross+forest:log(dist) + forest_grass:log(dist) + forest_crop:log(dist) +  
+                              (1 | strata) +
+                              (0 + forest | id) + (0 + forest_grass | id) + (0 + forest_crop | id)+(0+road_cross|id)):age,
+                            family=poisson, data=subfemale_sf,
+                            map=list(theta=factor(c(NA,1:4))),
+                            start=list(theta=c(log(1e3),0,0,0,0)))
+
+
+summary(Female_sf_models)
+
 
 #female winter/spring
-Female_ws_roads_models <- glmmTMB(case~-1+forest+forest_grass+forest_crop+road_cross+log(dist)+
-                                         
-                                         forest:road_cross+
-                                         
-                                         log(dist):road_cross+forest:log(dist) + forest_grass:log(dist) + forest_crop:log(dist) +  
-                                         (1 | strata) +
-                                         (0 + forest | id) + (0 + forest_grass | id) + (0 + forest_crop | id)+(0+road_cross|id),
-                                       family=poisson, data=subfemale_ws,
-                                       map=list(theta=factor(c(NA,1:4))),
-                                       start=list(theta=c(log(1e3),0,0,0,0)))
+Female_ws_roads_models <- glmmTMB(case~-1+(forest+forest_grass+forest_crop+road_cross+log(dist)+
+                                    
+                                    forest:road_cross+
+                                    
+                                    log(dist):road_cross+forest:log(dist) + forest_grass:log(dist) + forest_crop:log(dist) +  
+                                    (1 | strata) +
+                                    (0 + forest | id) + (0 + forest_grass | id) + (0 + forest_crop | id)+(0+road_cross|id)):age,
+                                  family=poisson, data=subfemale_ws,
+                                  map=list(theta=factor(c(NA,1:4))),
+                                  start=list(theta=c(log(1e3),0,0,0,0)))
+
+
+summary(Female_ws_roads_models)
 
 
 #male summer/fall
-Male_sf_roads_models <- glmmTMB(case~-1+forest+forest_open+road_cross+log(dist)+
-                                     
-                                     forest:road_cross+
-                                     
-                                     log(dist):road_cross+forest:log(dist) + forest_open:log(dist) +  
-                                     
-                                     (1 | strata) +
-                                     
-                                     (0 + forest | id) + (0 + forest_open | id) +(0+road_cross|id),
-                                   family=poisson, data=submale_sf,
-                                   map=list(theta=factor(c(NA,1:3))),
-                                   start=list(theta=c(log(1e3),0,0,0)))
+Male_sf_roads_models <- glmmTMB(case~-1+(forest+forest_grass+forest_crop+road_cross+log(dist)+
+                                           
+                                           forest:road_cross+
+                                           
+                                           log(dist):road_cross+forest:log(dist) + forest_grass:log(dist) + forest_crop:log(dist) +  
+                                           (1 | strata) +
+                                           (0 + forest | id) + (0 + forest_grass | id) + (0 + forest_crop | id)+(0+road_cross|id)):age,
+                                family=poisson, data=submale_sf,
+                                map=list(theta=factor(c(NA,1:4))),
+                                start=list(theta=c(log(1e3),0,0,0,0)))
+
+summary(Male_sf_roads_models)
+
 
 #male winter/spring
-Male_ws_roads_models <- glmmTMB(case~-1+forest+forest_open+road_cross+log(dist)+
-                                       
-                                       forest:road_cross+
-                                       
-                                       log(dist):road_cross+forest:log(dist) + forest_open:log(dist) +  
-                                       
-                                       (1 | strata) +
-                                       
-                                       (0 + forest | id) + (0 + forest_open | id) +(0+road_cross|id),
-                                     family=poisson, data=submale_ws,
-                                     map=list(theta=factor(c(NA,1:3))),
-                                     start=list(theta=c(log(1e3),0,0,0)))
+
+Male_ws_roads_models <- glmmTMB(case~-1+(forest+forest_grass+forest_crop+road_cross+log(dist)+
+                                  
+                                  forest:road_cross+
+                                  
+                                  log(dist):road_cross+forest:log(dist) + forest_grass:log(dist) + forest_crop:log(dist) +  
+                                  (1 | strata) +
+                                  (0 + forest | id) + (0 + forest_grass | id) + (0 + forest_crop | id)+(0+road_cross|id)):age,
+                                family=poisson, data=submale_ws,
+                                map=list(theta=factor(c(NA,1:4))),
+                                start=list(theta=c(log(1e3),0,0,0,0)))
+
+
+summary(Male_ws_roads_models)
+
+#
+#### 4 - Plotting ####
+#
+
+plot_landcover_flexible <- function(model, data, habitat_var, age_col = "age",
+                                    n_points = 100, dist_val = 1, landcover_name,
+                                    age_line_types = c("Adult" = "solid", "Juvenile" = "dashed")) {
+  
+  vals <- seq(0, 1, length.out = n_points)
+  age_levels <- unique(data[[age_col]])
+  plot_dat_list <- list()
+  
+  for (age_class in age_levels) {
+    data_age <- data %>% filter(!!sym(age_col) == age_class)
+    if (nrow(data_age) == 0) next
+    
+    newdat <- data.frame(
+      forest = mean(data_age$forest, na.rm = TRUE),
+      forest_grass = mean(data_age$forest_grass, na.rm = TRUE),
+      forest_crop = mean(data_age$forest_crop, na.rm = TRUE),
+      dist = dist_val,
+      age = age_class
+    )
+    
+    newdat <- newdat[rep(1, n_points), ]
+    newdat[[habitat_var]] <- vals
+    newdat$`log(dist)` <- log(newdat$dist)
+    
+    pred <- predict(model, newdata = newdat, type = "link", se.fit = TRUE, re.form = NA)
+    
+    df <- newdat %>%
+      mutate(
+        eta = pred$fit,
+        eta_se = pred$se.fit,
+        lower = eta - 1.96 * eta_se,
+        upper = eta + 1.96 * eta_se,
+        age_class = age_class,
+        # line_type = literal age class
+        line_type = age_class
+      )
+    
+    plot_dat_list[[age_class]] <- df
+  }
+  
+  plot_dat <- bind_rows(plot_dat_list)
+  plot_dat$age_class<-factor(plot_dat$age_class, levels = c("Juvenile", "Adult"))
+  
+  ggplot(plot_dat, aes_string(x = habitat_var, y = "eta", color = "age_class", linetype = "line_type")) +
+    geom_ribbon(aes(ymin = lower, ymax = upper, fill = age_class), alpha = 0.5, color = NA) +
+    geom_line(linewidth = 1.2) +
+    labs(
+      x = landcover_name,
+      y = "Relative selection",
+      color = "Age class",
+      fill = "Age class",
+      linetype = "Age class"
+    ) +
+    scale_color_manual(values = c("Adult" = "#40B0A6", "Juvenile" = "#E1Be6A")) +
+    scale_fill_manual(values = c("Adult" = "#40B0A6", "Juvenile" = "#E1Be6A")) +
+    # map the line type based on age
+    scale_linetype_manual(values = age_line_types) +
+    theme_classic(base_size = 24) +
+    theme(text = element_text(color="black"),
+          strip.background = element_blank(),
+          legend.position = "none")
+}
+
+plot_step_flexible <- function(model, data, habitat_var, age_col = "age",
+                               n_points = 100, landcover_name,yl,
+                               age_line_types = c("Adult" = "solid",
+                                                  "Juvenile" = "dashed")) {
+  
+  vals <- seq(0, 1, length.out = n_points)
+  age_levels <- unique(data[[age_col]])
+  plot_dat_list <- list()
+  
+  for (age_class in age_levels) {
+    data_age <- data %>% filter(!!sym(age_col) == age_class)
+    if (nrow(data_age) == 0) next
+    
+    newdat <- data.frame(
+      forest = mean(data_age$forest, na.rm = TRUE),
+      forest_grass = mean(data_age$forest_grass, na.rm = TRUE),
+      forest_crop = mean(data_age$forest_crop, na.rm = TRUE),
+      dist = mean(data_age$dist, na.rm = TRUE),
+      age = age_class
+    )
+    
+    newdat <- newdat[rep(1, n_points), ]
+    newdat[[habitat_var]] <- vals
+    newdat$`log(dist)` <- log(newdat$dist)
+    
+    pred <- predict(model, newdata = newdat, type = "link", se.fit = TRUE, re.form = NA)
+    
+    df <- newdat %>%
+      mutate(
+        eta = pred$fit,
+        eta_se = pred$se.fit,
+        lower_eta = eta - 1.96 * eta_se,
+        upper_eta = eta + 1.96 * eta_se,
+        step = exp(eta),
+        step_lower = exp(lower_eta),
+        step_upper = exp(upper_eta),
+        age_class = age_class,
+        line_type = age_class
+      )
+    
+    plot_dat_list[[as.character(age_class)]] <- df
+  }
+  
+  plot_dat <- bind_rows(plot_dat_list)
+  plot_dat$age_class<-factor(plot_dat$age_class, levels = c("Juvenile", "Adult"))
+  
+  ggplot(plot_dat, aes_string(x = habitat_var, y = "step",
+                              color = "age_class", linetype = "line_type")) +
+    geom_ribbon(aes(ymin = step_lower, ymax = step_upper, fill = age_class),
+                alpha = 0.50, color = NA) +
+    geom_line(linewidth = 1.2) +
+    labs(
+      x = landcover_name,
+      y = "Step length (m)",
+      color = "Age class",
+      fill = "Age class",
+      linetype = "Age class"
+    ) +
+    scale_color_manual(values = c("Adult" = "#40B0A6", "Juvenile" = "#E1Be6A")) +
+    scale_fill_manual(values = c("Adult" = "#40B0A6", "Juvenile" = "#E1Be6A")) +
+    scale_linetype_manual(values = age_line_types) +
+    coord_cartesian(ylim = c(0,yl))+
+    theme_classic(base_size = 24) +
+    theme(
+      text = element_text(color = "black"),
+      strip.background = element_blank(),
+      legend.position = "none"
+    )
+}
+
+
+#####Females#####
+
+##landcover
+
+#kitten
+fk_for <- plot_landcover_flexible(
+  model = fk_model,
+  data = female_kitten,
+  habitat_var = "forest",
+  landcover_name = "Proportion forest",
+  dist_val = 1,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "dashed")
+)
+
+fk_for
+
+fk_fc <- plot_landcover_flexible(
+  model = fk_model,
+  data = female_kitten,
+  habitat_var = "forest_crop",
+  landcover_name = "Proportion forest-cropland edge",
+  dist_val = 1,
+  age_line_types = c("Adult" = "dotted", "Juvenile" = "dashed")
+)
+
+fk_fc 
+
+fk_fg <- plot_landcover_flexible(
+  model = fk_model,
+  data = female_kitten,
+  habitat_var = "forest_grass",
+  landcover_name = "Proportion forest-grassland edge",
+  dist_val = 1,
+  age_line_types = c("Adult" = "dashed", "Juvenile" = "dashed")
+)
+fk_fg
+
+#breeding
+fb_for <- plot_landcover_flexible(
+  model = fb_model,
+  data = female_breeding,
+  habitat_var = "forest",
+  landcover_name = "Proportion forest",
+  dist_val = 1,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "dashed")
+)
+
+fb_fc <- plot_landcover_flexible(
+  model = fb_model,
+  data = female_breeding,
+  habitat_var = "forest_crop",
+  landcover_name = "Proportion forest-cropland edge",
+  dist_val = 1,
+  age_line_types = c("Adult" = "dotted", "Juvenile" = "dotted")
+)
+fb_fc
+fb_fg <- plot_landcover_flexible(
+  model = fb_model,
+  data = female_breeding,
+  habitat_var = "forest_grass",
+  landcover_name = "Proportion forest-grassland edge",
+  dist_val = 1,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "dashed")
+)
+
+fb_fc
+fb_fg
+##step plots
+
+#kitten
+fk_step_for <- plot_step_flexible(
+  model = fk_model,
+  data = female_kitten,
+  habitat_var = "forest",
+  landcover_name = "Proportion forest",
+  yl = 30,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+fk_step_for
+fk_step_fc <- plot_step_flexible(
+  model = fk_model,
+  data = female_kitten,
+  habitat_var = "forest_crop",
+  landcover_name = "Proportion forest-cropland edge",
+  yl = 30,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+fk_step_fg <- plot_step_flexible(
+  model = fk_model,
+  data = female_kitten,
+  habitat_var = "forest_grass",
+  landcover_name = "Proportion forest-grassland edge",
+  yl = 30,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "dashed")
+)
+
+#breeding
+fb_step_for <- plot_step_flexible(
+  model = fb_model,
+  data = female_breeding,
+  habitat_var = "forest",
+  landcover_name = "Proportion forest",
+  yl = 20,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+fb_step_fc <- plot_step_flexible(
+  model = fb_model,
+  data = female_breeding,
+  habitat_var = "forest_crop",
+  landcover_name = "Proportion forest-cropland edge",
+  yl = 20,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+fb_step_fg <- plot_step_flexible(
+  model = fb_model,
+  data = female_breeding,
+  habitat_var = "forest_grass",
+  landcover_name = "Proportion forest-grassland edge",
+  yl = 20,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+library(patchwork)
+
+# Remove x-axis for top row
+fk_for <- fk_for + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+fk_fg     <- fk_fg    + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+fk_fc     <- fk_fc     + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+fk_step_for <- fk_step_for + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+fk_step_fg     <- fk_step_fg    + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+fk_step_fc     <- fk_step_fc     + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+fb_for <- fb_for + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+fb_fg     <- fb_fg    + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+fb_fc     <- fb_fc     + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+#remove some y axis
+fk_fc <- fk_fc + theme(axis.title.y=element_blank())
+fk_step_fc    <- fk_step_fc      + theme(axis.title.y=element_blank())
+
+fk_fg     <- fk_fg      + theme(axis.title.y=element_blank())
+fk_step_fg     <- fk_step_fg        + theme(axis.title.y=element_blank())
+
+fb_fc <- fb_fc + theme(axis.title.y=element_blank())
+fb_step_fc    <- fb_step_fc     + theme(axis.title.y=element_blank())
+fb_fg     <- fb_fg      + theme(axis.title.y=element_blank())
+fb_step_fg      <- fb_step_fg       + theme(axis.title.y=element_blank())
+
+# Bottom row keeps x-axis
+# p_ws_forest, p_ws_fg, p_ws_fc remain as-is
+
+combined_plot <- (fk_for| fk_fg | fk_fc) /
+  (fk_step_for | fk_step_fg | fk_step_fc) /
+  (fb_for| fb_fg| fb_fc) /
+  (fb_step_for | fb_step_fg | fb_step_fc)+
+  plot_layout(guides = "collect")
+combined_plot
+
+
+
+#####Males#####
+
+##landcover
+
+#kitten
+mk_for <- plot_landcover_flexible(
+  model = mk_model,
+  data = male_kitten,
+  habitat_var = "forest",
+  landcover_name = "Proportion forest",
+  dist_val = 1,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "dashed")
+)
+
+mk_fc <- plot_landcover_flexible(
+  model = mk_model,
+  data = male_kitten,
+  habitat_var = "forest_crop",
+  landcover_name = "Proportion forest-cropland edge",
+  dist_val = 1,
+  age_line_types = c("Adult" = "dashed", "Juvenile" = "dotted")
+)
+
+mk_fg <- plot_landcover_flexible(
+  model = mk_model,
+  data = male_kitten,
+  habitat_var = "forest_grass",
+  landcover_name = "Proportion forest-grassland edge",
+  dist_val = 1,
+  age_line_types = c("Adult" = "dashed", "Juvenile" = "dashed")
+)
+
+mk_fc
+mk_fg
+
+#breeding
+mb_for <- plot_landcover_flexible(
+  model = mb_model,
+  data = male_breeding,
+  habitat_var = "forest",
+  landcover_name = "Proportion forest",
+  dist_val = 1,
+  age_line_types = c("Adult" = "dashed", "Juvenile" = "solid")
+)
+
+mb_fc <- plot_landcover_flexible(
+  model = mb_model,
+  data = male_breeding,
+  habitat_var = "forest_crop",
+  landcover_name = "Proportion forest-cropland edge",
+  dist_val = 1,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+mb_fg <- plot_landcover_flexible(
+  model = mb_model,
+  data = male_breeding,
+  habitat_var = "forest_grass",
+  landcover_name = "Proportion forest-grassland edge",
+  dist_val = 1,
+  age_line_types = c("Adult" = "dashed", "Juvenile" = "dotted")
+)
+
+mb_fc
+mb_fg
+##step plots
+
+#kitten
+mk_step_for <- plot_step_flexible(
+  model = mk_model,
+  data = male_kitten,
+  habitat_var = "forest",
+  landcover_name = "Proportion forest",
+  yl = 8,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+mk_step_fc <- plot_step_flexible(
+  model = mk_model,
+  data = male_kitten,
+  habitat_var = "forest_crop",
+  landcover_name = "Proportion forest-cropland edge",
+  yl = 8,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+mk_step_fg <- plot_step_flexible(
+  model = mk_model,
+  data = male_kitten,
+  habitat_var = "forest_grass",
+  landcover_name = "Proportion forest-grassland edge",
+  yl = 8,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+#breeding
+mb_step_for <- plot_step_flexible(
+  model = mb_model,
+  data = male_breeding,
+  habitat_var = "forest",
+  landcover_name = "Proportion forest",
+  yl = 25,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+mb_step_fc <- plot_step_flexible(
+  model = mb_model,
+  data = male_breeding,
+  habitat_var = "forest_crop",
+  landcover_name = "Proportion forest-cropland edge",
+  yl = 25,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+mb_step_fg <- plot_step_flexible(
+  model = mb_model,
+  data = male_breeding,
+  habitat_var = "forest_grass",
+  landcover_name = "Proportion forest-grassland edge",
+  yl = 25,
+  age_line_types = c("Adult" = "solid", "Juvenile" = "solid")
+)
+
+mb_step_fc
+mb_step_fg
+library(patchwork)
+
+# Remove x-axis for top row
+mk_for <- mk_for + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+mk_fg     <- mk_fg    + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+mk_fc     <- mk_fc     + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+mk_step_for <- mk_step_for + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+mk_step_fg     <- mk_step_fg    + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+mk_step_fc     <- mk_step_fc     + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+mb_for <- mb_for + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+mb_fg     <- mb_fg    + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+mb_fc     <- mb_fc     + theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+
+#remove some y axis
+mk_fc <- mk_fc + theme(axis.title.y=element_blank())
+mk_step_fc    <- mk_step_fc      + theme(axis.title.y=element_blank())
+
+mk_fg     <- mk_fg      + theme(axis.title.y=element_blank())
+mk_step_fg     <- mk_step_fg        + theme(axis.title.y=element_blank())
+
+mb_fc <- mb_fc + theme(axis.title.y=element_blank())
+mb_step_fc    <- mb_step_fc     + theme(axis.title.y=element_blank())
+mb_fg     <- mb_fg      + theme(axis.title.y=element_blank())
+mb_step_fg      <- mb_step_fg       + theme(axis.title.y=element_blank())
+
+# Bottom row keeps x-axis
+# p_ws_forest, p_ws_fg, p_ws_fc remain as-is
+
+combined_plot_males <- (mk_for| mk_fg | mk_fc) /
+  (mk_step_for | mk_step_fg | mk_step_fc) /
+  (mb_for| mb_fg| mb_fc) /
+  (mb_step_for | mb_step_fg | mb_step_fc)+
+  plot_layout(guides = "collect")
+combined_plot_males
+
+
+
+
+#####Road crossing######
+
+
+
+plot_male_selection_step_crossing <- function(model, data, season_label,
+                                              age_levels = c("Adult", "Juvenile"),
+                                              dist_seq = NULL) {
+  
+  
+  if (is.null(dist_seq)) {
+    dist_seq <- seq(
+      quantile(data$dist, 0.05, na.rm = TRUE),
+      quantile(data$dist, 0.95, na.rm = TRUE),
+      length.out = 100
+    )
+  }
+  
+  plot_dat_list <- list()
+  
+  for (age_val in age_levels) {
+    
+    data_age <- data %>% filter(age == age_val)
+    if (nrow(data_age) == 0) next
+    
+    newdat <- data.frame(
+      dist = dist_seq,
+      forest = mean(data_age$forest, na.rm = TRUE),
+      forest_grass = mean(data_age$forest_grass, na.rm = TRUE),
+      forest_crop = mean(data_age$forest_crop, na.rm = TRUE),
+      road_cross = 1,
+      age = age_val
+    )
+    
+    newdat$`log(dist)` <- log(newdat$dist)
+    
+    pred <- predict(
+      model,
+      newdata = newdat,
+      type = "link",
+      se.fit = TRUE,
+      re.form = NA
+    )
+    
+    plot_dat_list[[age_val]] <- newdat %>%
+      mutate(
+        eta = pred$fit,
+        eta_se = pred$se.fit,
+        lower = eta - 1.96 * eta_se,
+        upper = eta + 1.96 * eta_se,
+        age_class = age_val
+      )
+  }
+  
+  plot_dat <- bind_rows(plot_dat_list)
+  
+  ggplot(
+    plot_dat,
+    aes(x = dist, y = eta, color = age_class, fill = age_class)
+  ) +
+    geom_ribbon(aes(ymin = lower, ymax = upper),
+                alpha = 0.15, color = NA) +
+    geom_line(linewidth = 1.2) +
+    labs(
+      x = "Step length (m)",
+      y = "Relative selection",
+      color = "Age class",
+      fill = "Age class"
+    ) +
+    scale_color_manual(values = c("Adult" = "#40B0A6", "Juvenile" = "#E1Be6A")) +
+    scale_fill_manual(values = c("Adult" = "#40B0A6", "Juvenile" = "#E1Be6A")) +
+    theme_classic(base_size = 18) +
+    theme(
+      text = element_text(color = "black"),
+      legend.position = "none"
+    )
+}
+
+p_male_ws_cross <- plot_male_selection_step_crossing(
+  model = Male_ws_roads_models,
+  data = submale_ws,
+  season_label = "Winter/Spring"
+)
+
+p_male_sf_cross <- plot_male_selection_step_crossing(
+  model = Male_sf_roads_models,
+  data = submale_sf,
+  season_label = "Summer/Fall"
+)
+
+
+
+
+combined_road_cross<-(p_male_sf_cross| p_male_ws_cross) +
+  plot_layout(guides = "collect")
+combined_road_cross
+
+
+
+#Forest cover and roads
+
+#MALES
+#winter/spring
+newdat <- expand.grid(
+  forest = seq(min(submale_ws$forest), max(submale_ws$forest), length.out = 100),
+  road_cross = 1,
+  forest_grass = mean(submale_ws$forest_grass, na.rm = TRUE),
+  forest_crop = mean(submale_ws$forest_crop, na.rm = TRUE),
+  dist = mean(submale_ws$dist, na.rm = TRUE),
+  strata = NA,
+  id = NA,
+  age = unique(submale_ws$age)[1]
+)
+
+newdat$`log(dist)` <- log(newdat$dist)
+
+pred_out <- predict(Male_ws_roads_models,
+                    newdata = newdat,
+                    type = "link",      # IMPORTANT
+                    se.fit = TRUE,
+                    re.form = NA)
+
+newdat$fit_link <- pred_out$fit
+newdat$se_link  <- pred_out$se.fit
+
+# 95% CI on link scale
+newdat$lwr_link <- newdat$fit_link - 1.96 * newdat$se_link
+newdat$upr_link <- newdat$fit_link + 1.96 * newdat$se_link
+
+# Back-transform to response scale
+newdat$fit <- exp(newdat$fit_link)
+newdat$lwr <- exp(newdat$lwr_link)
+newdat$upr <- exp(newdat$upr_link)
+
+
+ggplot(newdat, aes(x = forest, y = fit)) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.2) +
+  labs(
+    x = "Forest cover (%)",
+    y = "Relative Selection Strength"
+  ) +
+  theme_classic()
+
+
+
+##summer/fall
+
+newdat <- expand.grid(
+  forest = seq(min(submale_sf$forest), max(submale_sf$forest), length.out = 100),
+  road_cross = 1,
+  forest_grass = mean(submale_sf$forest_grass, na.rm = TRUE),
+  forest_crop = mean(submale_sf$forest_crop, na.rm = TRUE),
+  dist = mean(submale_sf$dist, na.rm = TRUE),
+  strata = NA,
+  id = NA,
+  age = unique(submale_sf$age)[1]
+)
+
+newdat$`log(dist)` <- log(newdat$dist)
+
+pred_out <- predict(Male_sf_roads_models,
+                    newdata = newdat,
+                    type = "link",      # IMPORTANT
+                    se.fit = TRUE,
+                    re.form = NA)
+
+newdat$fit_link <- pred_out$fit
+newdat$se_link  <- pred_out$se.fit
+
+# 95% CI on link scale
+newdat$lwr_link <- newdat$fit_link - 1.96 * newdat$se_link
+newdat$upr_link <- newdat$fit_link + 1.96 * newdat$se_link
+
+# Back-transform to response scale
+newdat$fit <- exp(newdat$fit_link)
+newdat$lwr <- exp(newdat$lwr_link)
+newdat$upr <- exp(newdat$upr_link)
+
+
+ggplot(newdat, aes(x = forest, y = fit)) +
+  geom_line(size = 1.2, color = "#40B0A6") +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.2, fill = "#40B0A6") +
+  labs(
+    x = "Proportion Forest (%)",
+    y = "Relative Selection Strength"
+  ) +
+  theme_classic()
+
+
+
+#FEMALES
+##summer/fall
+
+newdat <- expand.grid(
+  forest = seq(min(subfemale_sf$forest), max(subfemale_sf$forest), length.out = 100),
+  road_cross = 1,
+  forest_grass = mean(subfemale_sf$forest_grass, na.rm = TRUE),
+  forest_crop = mean(subfemale_sf$forest_crop, na.rm = TRUE),
+  dist = mean(subfemale_sf$dist, na.rm = TRUE),
+  strata = NA,
+  id = NA,
+  age = unique(subfemale_sf$age)[1]
+)
+
+newdat$`log(dist)` <- log(newdat$dist)
+
+pred_out <- predict(Female_sf_models,
+                    newdata = newdat,
+                    type = "link",      # IMPORTANT
+                    se.fit = TRUE,
+                    re.form = NA)
+
+newdat$fit_link <- pred_out$fit
+newdat$se_link  <- pred_out$se.fit
+
+# 95% CI on link scale
+newdat$lwr_link <- newdat$fit_link - 1.96 * newdat$se_link
+newdat$upr_link <- newdat$fit_link + 1.96 * newdat$se_link
+
+# Back-transform to response scale
+newdat$fit <- exp(newdat$fit_link)
+newdat$lwr <- exp(newdat$lwr_link)
+newdat$upr <- exp(newdat$upr_link)
+
+
+ggplot(newdat, aes(x = forest, y = fit)) +
+  geom_line(size = 1.2) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.2) +
+  labs(
+    x = "Forest cover (%)",
+    y = "Relative Selection Strength"
+  ) +
+  theme_classic()
