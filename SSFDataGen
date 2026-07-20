@@ -1,0 +1,290 @@
+#Author: Ellen Audia
+#Email: ellen.audia@siu.edu
+#Last updated: 07/20/2026
+#Bobcat step selection
+#R script part 1: SSF Data Generation
+
+#Definition: kitten = summer/fall; breeding = winter/spring
+
+#
+#### 1 - Set up ####
+#
+
+library(sf)
+library(sp)
+library(raster)
+library(terra)
+library(amt)
+library(dplyr)
+library(tidyr)
+library(adehabitatLT)
+library(lubridate)
+
+#set directory
+setwd("your/directory")
+
+#read in data
+bobcat<-readRDS("bobcat_2026_01_17.rds")
+bobcat<-bobcat[,-5]
+names(bobcat)<-c("ID", "dt", "y", "x")
+
+#format date
+bobcat <- bobcat %>%
+  mutate(
+    yr_month = floor_date(dt, "month"),
+    season = case_when(
+      month(dt) %in% c(1:4, 11:12) ~ "breeding",
+      month(dt) %in% 5:10          ~ "kitten",
+      TRUE                         ~ NA_character_
+    )
+  )
+
+
+#breeding season
+bobcat_b <- bobcat %>%
+  filter(month(dt) %in% c(1:4, 11:12))
+table(bobcat_b$ID)
+
+#check the number of months (wanted >= 1)
+start_end_timesb <- bobcat_b %>%
+  group_by(ID) %>%
+  summarise(
+    StartTime = min(dt),
+    EndTime = max(dt),
+    MonthsCovered = list(seq.Date(
+      from = floor_date(as.Date(StartTime), "month"),
+      to = ceiling_date(as.Date(EndTime) - months(1) - days(1), "month"),
+      by = "month"
+    )) %>% map(~ format(.x, "%b")),
+    TotalMonths = length(unique(unlist(MonthsCovered)))  # Calculate total number of unique months covered
+  ) %>%
+  unnest(MonthsCovered) %>%
+  distinct()
+
+#filter out individuals with not enough data
+bobcat_b<-bobcat_b %>% 
+  filter(!(ID == "Clover" | ID == "Colby" | ID == "Gorganzola" | ID == "Myzithra" | ID == "P Reggiano"))
+
+
+
+
+#Kitten season
+bobcat_k <- bobcat %>%
+  filter(month(dt) %in% 5:10) 
+table(bobcat_k$ID)
+
+start_end_timesk <- bobcat_k %>%
+  group_by(ID) %>%
+  summarise(
+    StartTime = min(dt),
+    EndTime = max(dt),
+    MonthsCovered = list(seq.Date(
+      from = floor_date(as.Date(StartTime), "month"),
+      to = ceiling_date(as.Date(EndTime) - months(1) - days(1), "month"),
+      by = "month"
+    )) %>% map(~ format(.x, "%b")),
+    TotalMonths = length(unique(unlist(MonthsCovered)))  # Calculate total number of unique months covered
+  ) %>%
+  unnest(MonthsCovered) %>%
+  distinct()
+
+bobcat_k<-bobcat_k %>% 
+  filter(!(ID == "Butterfly" | ID == "Hoya" | ID == "Muenster" | ID == "Swiss"))
+
+
+data.together<-rbind(bobcat_b, bobcat_k)
+
+df<-data.frame()
+df<-as.data.frame(table(data.together$ID))
+mean(df$Freq)
+sd(df$Freq)
+
+#
+#### 2 - Generate Random Steps ####
+#
+
+#Make spatial
+bobcat_sf<-st_as_sf(data.together, coords=c("x","y"), crs=4326)
+bobcat_sf<-st_transform(bobcat_sf,crs=32616)
+
+bobcat_sf$dt<-as.POSIXct(strptime(bobcat_sf$dt, format = "%Y-%m-%d %H:%M", tz="America/Chicago"))
+mapview(bobcat_sf)
+
+bobcat_sf <- bobcat_sf %>%
+  filter(!is.na(dt))
+
+traj<-as.ltraj(st_coordinates(bobcat_sf), date=bobcat_sf$dt, id=bobcat_sf$ID)
+head(traj)
+
+# Create burst with big gaps
+traj2<-cutltraj(traj,"dt>24*3600")
+summary(traj2)
+
+#setto - rounding time
+attr(traj2[[1]]$date, "tzone")
+refda <- as.POSIXct("00:00", format = "%H:%M", tz = "America/Chicago")
+
+#setNA - filling locations
+traj2a <- setNA(traj2, refda, dt = 7200, tol = 3600, units = "sec")
+
+traj3 <- sett0(
+  traj2a,
+  refda,
+  dt = 7200,
+  tol = 3600,
+  units = "sec"
+)
+
+#make a trajectory dataframe
+traj_df<-ld(traj3)
+
+
+
+#fit distribution for dist - remove NAs and 0s
+dist<-fitdistr(na.omit(traj_df$dist[traj_df$dist>0]), "gamma")
+
+#use shape and area from dist
+step_length<-rgamma(100000, dist$estimate[1], dist$estimate[2])
+hist(step_length)
+mean(step_length)
+
+#fit distribution for turning angle
+angle<-seq(-pi, pi, length.out=100000)
+
+#combine distributions together into a data frame
+rand.dist<-data.frame(dist=step_length,rel.angle=angle,id="Theory")
+head(rand.dist)
+
+
+#generate random steps
+ssf<-rdSteps(traj3, nrs=25, rand.dis = rand.dist) #25 random steps for each actual step
+ssf$x_end<-ssf$x+ssf$dx
+ssf$y_end<-ssf$y+ssf$dy
+
+ssf <- ssf %>%
+  mutate(
+    yr_month = floor_date(date, "month"),
+    season = case_when(
+      month(date) %in% c(1:4, 11:12) ~ "breeding",
+      month(date) %in% 5:10          ~ "kitten",
+      TRUE                         ~ NA_character_
+    )
+  )
+
+#
+#### 3 - Covariates ####
+#
+
+#make steps into actual lines
+ssf_lines <- ssf %>%
+  mutate(step_id = row_number()) %>%
+  rowwise() %>%
+  mutate(
+    geometry = st_sfc(
+      st_linestring(
+        matrix(
+          c(x, y,
+            x_end, y_end),
+          ncol = 2,
+          byrow = TRUE
+        )
+      ),
+      crs = 32616
+    )
+  ) %>%
+  st_as_sf()
+
+
+#read in landcover data
+lc<-rast("NLCD_forest_grasscrop_edge.tif")
+plot(lc)
+
+#check crs
+ssf_lines <- st_transform(ssf_lines, crs(lc))
+
+#turn ssf lines into vector
+ssf_v <- st_as_sf(ssf_lines)
+
+#extract with weights
+lc_ext <- terra::extract(
+  lc,
+  ssf_v,
+  weights = TRUE,
+  exact = TRUE
+)
+
+#extract without
+lc_ext_simple <- terra::extract(
+  lc,
+  ssf_v,
+  weights = FALSE
+)
+
+#determine missing id's - some id's had lines that didn't include/pass through all landcover classes so they were removed - need to make sure 
+#these all go back into the dataset with those proportions set to 0
+
+missing_ids <- setdiff(
+  lc_ext_simple$ID,
+  lc_ext$ID
+)
+
+#create rows for the missing ids
+lc_single <- lc_ext_simple %>%
+  filter(ID %in% missing_ids) %>%
+  transmute(
+    ID,
+    lc_class = NLCD_Buffer7CatProj,
+    frac = 1
+  )
+
+#bind and rename
+lc_df <- bind_rows(
+  lc_ext %>%
+    rename(lc_class = NLCD_Buffer7CatProj, frac = weight),
+  lc_single
+)
+
+#turn into wide data frame
+lc_wide <- lc_df %>%
+  group_by(ID, lc_class) %>%
+  summarise(frac = sum(frac), .groups = "drop") %>%
+  pivot_wider(
+    names_from = lc_class,
+    values_from = frac,
+    values_fill = 0
+  )
+
+ #CHECK!!!
+# All steps present
+nrow(lc_wide) == nrow(ssf_lines)
+
+lc_wide$step_id<-lc_wide$ID
+ssf_lines_wLC<-merge(ssf_lines, lc_wide, by = "step_id")
+ssf_lines_wLC <- ssf_lines_wLC[,c("date", "dist", "abs.angle","rel.angle", "x", "y", "id", "case", "strata","season", "1","2","3","4","5","6","7","8","9")]
+colnames(ssf_lines_wLC)[c(11:19)]<- c("developed","grassland","forest","cropland","forest_grass", "forest_crop", "other", "wetland", "water")
+ 
+
+#Roads
+roads<-st_read("DetailedRoads.shp")
+
+# make sure CRS matches steps and geometry is valid
+roads <- st_transform(roads, st_crs(ssf_lines_wLC))
+roads <- st_make_valid(roads)
+ssf_lines_wLC <- st_make_valid(ssf_lines_wLC)
+
+#binary
+road_hits <- st_intersects(ssf_lines_wLC, roads)
+ssf_lines_wLC$road_cross <- as.integer(lengths(road_hits) > 0)
+
+colnames(ssf_lines_wLC)[7]<-"ID"
+
+#add in metadata
+meta<-read.csv("C:/Users/emaud/OneDrive - Southern Illinois University/SIU/OneDrive - Southern Illinois University/Documents/SIU/Bobcat Data/BobcatMetadata23_25.csv")
+ssf_lines_wCov<-merge(ssf_lines_wLC, meta, by = "ID")
+ssf_lines_wCov<-ssf_lines_wCov[,-24]
+ssf_lines_wCov$id<-as.factor(ssf_lines_wCov$ID)
+ssf_lines_wCov$forest_open<-ssf_lines_wCov$forest_crop+ssf_lines_wCov$forest_grass
+ssf_lines_wCov<-ssf_lines_wCov[,c(1:19,26,20:25)]
+
+#Save data for analysis
+saveRDS(ssf_lines_wCov, "ssf_25_wCov.rds")
