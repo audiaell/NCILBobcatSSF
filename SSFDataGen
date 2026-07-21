@@ -61,6 +61,9 @@ start_end_timesb <- bobcat_b %>%
   unnest(MonthsCovered) %>%
   distinct()
 
+#Check number of locations per individual - ensure > 200
+table(bobcat_b$ID)
+
 #filter out individuals with not enough data
 bobcat_b<-bobcat_b %>% 
   filter(!(ID == "Clover" | ID == "Colby" | ID == "Gorganzola" | ID == "Myzithra" | ID == "P Reggiano"))
@@ -88,16 +91,15 @@ start_end_timesk <- bobcat_k %>%
   unnest(MonthsCovered) %>%
   distinct()
 
+#Check number of locations per individual - ensure > 200
+table(bobcat_k$ID)
+
 bobcat_k<-bobcat_k %>% 
   filter(!(ID == "Butterfly" | ID == "Hoya" | ID == "Muenster" | ID == "Swiss"))
 
 
 data.together<-rbind(bobcat_b, bobcat_k)
 
-df<-data.frame()
-df<-as.data.frame(table(data.together$ID))
-mean(df$Freq)
-sd(df$Freq)
 
 #
 #### 2 - Generate Random Steps ####
@@ -279,11 +281,10 @@ ssf_lines_wLC$road_cross <- as.integer(lengths(road_hits) > 0)
 colnames(ssf_lines_wLC)[7]<-"ID"
 
 #add in metadata
-meta<-read.csv("C:/Users/emaud/OneDrive - Southern Illinois University/SIU/OneDrive - Southern Illinois University/Documents/SIU/Bobcat Data/BobcatMetadata23_25.csv")
+meta<-read.csv("metat/data/here")
 ssf_lines_wCov<-merge(ssf_lines_wLC, meta, by = "ID")
 ssf_lines_wCov<-ssf_lines_wCov[,-24]
 ssf_lines_wCov$id<-as.factor(ssf_lines_wCov$ID)
-ssf_lines_wCov$forest_open<-ssf_lines_wCov$forest_crop+ssf_lines_wCov$forest_grass
 ssf_lines_wCov<-ssf_lines_wCov[,c(1:19,26,20:25)]
 
 #Save data for analysis
