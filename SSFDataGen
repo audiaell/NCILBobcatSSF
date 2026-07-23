@@ -24,8 +24,8 @@ library(lubridate)
 setwd("your/directory")
 
 #read in data
-bobcat<-readRDS("bobcat_2026_01_17.rds")
-bobcat<-bobcat[,-5]
+bobcat<-readRDS("data")
+bobcat<-bobcat[,-5] #remove DOP
 names(bobcat)<-c("ID", "dt", "y", "x")
 
 #format date
