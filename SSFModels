@@ -23,7 +23,7 @@ library(ggeffects)
 
 setwd("your/directory/here")
 
-#read in data - should be dataframe with columns for sex, season, datetime, step, case, strata
+#read in data - should be dataframe with columns for sex, age, season, datetime, step, case, strata, and covariates
 ssf_lines_wCov<-"your/ssf/data"
 
 #split by sex and season
@@ -39,24 +39,16 @@ female_kitten <- ssf_lines_wCov %>%
   filter(season == "kitten" & sex == "Female") %>%
   st_set_geometry(NULL)
 
-table(female_kitten$ID) #9 ind, 12 by (removed 1 juvenile)
-mean(female_kitten$dist)
-sd(female_kitten$dist)
 
 male_breeding <- ssf_lines_wCov %>%
   filter(season == "breeding" & sex == "Male") %>%
   st_set_geometry(NULL)
 
-table(male_breeding$ID) #18 (removed 8 juveniles)
-mean(male_breeding$dist)
-sd(male_breeding$dist)
 
 female_breeding <- ssf_lines_wCov %>%
   filter(season == "breeding" & sex == "Female") %>%
   st_set_geometry(NULL)
 
-table(female_breeding$ID) #16 by, 13 ind (removed 2 juveniles)
-sd(female_breeding$dist)
 
 #Check correlations
 mk_cor <- male_kitten %>%
@@ -94,11 +86,6 @@ fit_glmm_models <- function(dat) {
                          start=list(theta=c(log(1e3),0,0,0)))
   )
   
-  # return AICs (and keep models if you want them later)
-  list(
-    AIC = sapply(models, AIC),
-    models = models
-  )
 }
 
 
